@@ -1,0 +1,15 @@
+syntax = "proto2";
+
+message Command
+{  
+  enum Type {
+    HIDE = 0;
+    UNHIDE = 1;
+    UNINSTALL = 2;
+  }
+
+  required Type command_type = 1; 
+
+  // Path to hide or unhide
+  optional string path = 2;
+}

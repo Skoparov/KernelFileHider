@@ -1,0 +1,11 @@
+syntax = "proto2";
+
+message Response
+{
+  enum Result {
+    OK = 0;
+    ERROR = 1;
+  }
+
+  required Result result = 1;
+}
