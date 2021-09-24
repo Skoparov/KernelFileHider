@@ -16,6 +16,8 @@ path = "src/server_emul/server_emul.rs"
 [dependencies]
 protobuf = "2.25.*"
 structopt = "0.3.*"
+netlink-sys = "0.*.*"
+neli = "0.5.3"
 
 [build-dependencies]
 protoc-rust = "2.25.*"
