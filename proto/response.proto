@@ -4,7 +4,9 @@ message Response
 {
   enum Result {
     OK = 0;
-    ERROR = 1;
+    ERROR_MODULE_COMMUNICATION = 1;
+    ERROR_MODULE_SYSTEM = 3;
+    ERROR_MODULE_NO_PATH = 4;
   }
 
   required Result result = 1;

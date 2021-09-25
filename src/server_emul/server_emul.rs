@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use protobuf::Message;
 use structopt::StructOpt;
 use collector::gen::*;
-use collector::common::common::*;
+use collector::common::*;
 
 const COMMAND_VALS: &[&str] = &["hide", "unhide", "uninstall"];
 
@@ -14,7 +14,7 @@ const COMMAND_VALS: &[&str] = &["hide", "unhide", "uninstall"];
 #[structopt(name = "server_emulator")]
 struct CliArgs {
    /// Collector address
-   #[structopt(short, long, default_value = "localhost)")]
+   #[structopt(short, long, default_value = "localhost")]
    address: String,
 
    /// Collector port
@@ -53,7 +53,7 @@ fn send_command(
       command.set_path(path.unwrap().into_os_string().into_string().unwrap());
    }
 
-   send_message(&mut stream, &command);
+   common::send_message(&mut stream, &command);
 }
 
 fn main() {
