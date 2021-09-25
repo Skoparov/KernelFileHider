@@ -39,9 +39,10 @@ enum COLLECTOR_RESULT
 };
 
 struct mutex mtx;
-int hide(struct sk_buff *sender_skb, struct genl_info *info);
-int unhide(struct sk_buff *sender_skb, struct genl_info *info);
-int uninstall(struct sk_buff *sender_skb, struct genl_info *info);
+
+int hide_cb(struct sk_buff *sender_skb, struct genl_info *info);
+int unhide_cb(struct sk_buff *sender_skb, struct genl_info *info);
+int uninstall_cb(struct sk_buff *sender_skb, struct genl_info *info);
 
 struct genl_ops collector_ops[COLLECTOR_COMMAND_COUNT] =
 {
@@ -49,7 +50,7 @@ struct genl_ops collector_ops[COLLECTOR_COMMAND_COUNT] =
         .cmd = COLLECTOR_COMMAND_HIDE,
         .flags = 0,
         .internal_flags = 0,
-        .doit = hide,
+        .doit = hide_cb,
         .dumpit = NULL,
         .start = NULL,
         .done = NULL,
@@ -59,7 +60,7 @@ struct genl_ops collector_ops[COLLECTOR_COMMAND_COUNT] =
         .cmd = COLLECTOR_COMMAND_UNHIDE,
         .flags = 0,
         .internal_flags = 0,
-        .doit = unhide,
+        .doit = unhide_cb,
         .dumpit = NULL,
         .start = NULL,
         .done = NULL,
@@ -69,7 +70,7 @@ struct genl_ops collector_ops[COLLECTOR_COMMAND_COUNT] =
         .cmd = COLLECTOR_COMMAND_UNINSTALL,
         .flags = 0,
         .internal_flags = 0,
-        .doit = uninstall,
+        .doit = uninstall_cb,
         .dumpit = NULL,
         .start = NULL,
         .done = NULL,
@@ -78,8 +79,8 @@ struct genl_ops collector_ops[COLLECTOR_COMMAND_COUNT] =
 };
 
 static struct nla_policy collector_policy[COLLECTOR_ATTRIBUTE_COUNT] = {
-        [COLLECTOR_ATTRIBUTE_UNSPEC] = {.type = NLA_UNSPEC},
-        [COLLECTOR_ATTRIBUTE_MSG] = {.type = NLA_NUL_STRING}
+    [COLLECTOR_ATTRIBUTE_UNSPEC] = {.type = NLA_UNSPEC},
+    [COLLECTOR_ATTRIBUTE_MSG] = {.type = NLA_NUL_STRING}
 };
 
 static struct genl_family family_descr = {
@@ -98,129 +99,157 @@ static struct genl_family family_descr = {
         .post_doit = NULL
 };
 
-int hide_path(char* path){ return 0; }
-int unhide_path(char* path){ return 0; }
-
-enum COLLECTOR_RESULT get_path(struct genl_info* info, char** path)
+enum COLLECTOR_RESULT hide_path(char* path)
 {
+    pr_info("Hide path: %s\n", path);
+    return COLLECTOR_OK;
+ }
+
+enum COLLECTOR_RESULT unhide_path(char* path)
+{
+    pr_info("Unhide path: %s\n", path);
+    return COLLECTOR_OK;
+}
+
+enum COLLECTOR_RESULT uninstall(void)
+{
+    pr_info("Uninstall\n");
+    return COLLECTOR_OK;
+}
+
+char* get_path(struct genl_info* info)
+{
+    char* path;
     struct nlattr* attr;
-    if (info == NULL)
+
+    if (!info)
     {
-        pr_err("Info is null, aborting\n");
-        return COLLECTOR_ERROR_PROTOCOL;
+        pr_err("Info is null\n");
+        return NULL;
     }
 
     attr = info->attrs[COLLECTOR_ATTRIBUTE_MSG];
     if (!attr)
     {
-        pr_err("Failed to get path, aborting\n");
-        return COLLECTOR_ERROR_NO_PATH;
+        pr_err("Path not found in attrs\n");
+        return NULL;
     }
 
-    *path = (char*)nla_data(attr);
-    if (*path == NULL)
+    path = (char*)nla_data(attr);
+    if (path == NULL)
     {
-        pr_err("Error receiving path\n");
-        return COLLECTOR_ERROR_NO_PATH;
+        pr_err("Path is empty\n");
+        return NULL;
     }
 
-    pr_info("Received path: %s\n", *path);
-    return COLLECTOR_OK;
+    return path;
 }
 
-enum COLLECTOR_RESULT send_reply(
-    struct genl_info* info,
-    enum COLLECTOR_COMMAND command,
-    char* msg,
-    struct sk_buff** reply)
+int send_reply(struct genl_info* info, enum COLLECTOR_COMMAND command, enum COLLECTOR_RESULT result)
 {
     int res;
     void* msg_head;
+    struct sk_buff* reply;
 
-    *reply = genlmsg_new(NLMSG_GOODSIZE, GFP_KERNEL);
-    if (*reply == NULL)
+    if (!info)
     {
-        pr_err("Failed to create reply skb\n");
-        return COLLECTOR_ERROR_SYSTEM;
+        pr_err("Info is null\n");
+        return -1;
     }
 
-    msg_head = genlmsg_put(*reply,
+    reply = genlmsg_new(NLMSG_GOODSIZE, GFP_KERNEL);
+    if (!reply)
+    {
+        pr_err("Failed to create reply buff\n");
+        return -ENOMEM;
+    }
+
+    msg_head = genlmsg_put(reply,
                          info->snd_portid,
                          info->snd_seq + 1,
                          &family_descr,
                          0, // flags
                          command);
 
-    if (msg_head == NULL)
+    if (!msg_head)
     {
         pr_err("Failed to create msg head\n");
-        return COLLECTOR_ERROR_SYSTEM;
+        return -ENOMEM;
     }
 
-    res = nla_put_string(*reply, COLLECTOR_ATTRIBUTE_MSG, msg);
+    res = nla_put_u8(reply, COLLECTOR_ATTRIBUTE_MSG, result);
     if (res != 0)
     {
-        pr_err("Failed to put reply string, err: %d\n", res);
-        return COLLECTOR_ERROR_SYSTEM;
+        pr_err("Failed to put reply code, err: %d\n", res);
+        return res;
     }
 
-    genlmsg_end(*reply, msg_head);
-    return COLLECTOR_OK;
-}
-
-int exec(struct sk_buff* sender_skb, struct genl_info* info, enum COLLECTOR_COMMAND command)
-{
-    int rc;
-    char* path;
-    struct sk_buff* reply;
-    enum COLLECTOR_RESULT res;
-
-    if (command != COLLECTOR_COMMAND_UNINSTALL)
+    genlmsg_end(reply, msg_head);
+    res = genlmsg_reply(reply, info);
+    if (res != 0)
     {
-        res = get_path(info, &path);
-        if (res != COLLECTOR_OK)
-        {
-            // TODO: Send response
-            return -1;
-        }
-    }
-    else
-    {
-        path = NULL;
-    }
-
-    // TODO: exec
-
-    res = create_reply(info, command, path, &reply);
-    if (res != COLLECTOR_OK)
-        return -1;
-
-    rc = genlmsg_reply(reply, info);
-    if (rc != 0)
-    {
-        pr_err("Failed to send reply, error: %d", rc);
-        return -1;
+        pr_err("Failed to send reply, error: %d", res);
+        return res;
     }
 
     return 0;
 }
 
-int hide(struct sk_buff* sender_skb, struct genl_info* info)
+int change_path_visibility(struct genl_info* info, bool hide)
 {
-    pr_info("%s() invoked\n", __func__);
-    return exec(sender_skb, info, COLLECTOR_COMMAND_HIDE);
+    int res;
+    char* path;
+    enum COLLECTOR_COMMAND command;
+    enum COLLECTOR_RESULT collector_res;
+
+    res = mutex_lock_interruptible(&mtx);
+    if (res != 0)
+    {
+        pr_err("Failed to get lock!\n");
+        return res;
+    }
+
+    path = get_path(info);
+    if (path)
+    {
+        collector_res = hide? hide_path(path) : unhide_path(path);
+    }
+    else
+    {
+        collector_res = COLLECTOR_ERROR_NO_PATH;
+    }
+
+    mutex_unlock(&mtx);
+
+    command = hide? COLLECTOR_COMMAND_HIDE : COLLECTOR_COMMAND_UNHIDE;
+    res = send_reply(info, command, collector_res);
+    return res;
 }
 
-int unhide(struct sk_buff* sender_skb, struct genl_info* info)
+int hide_cb(struct sk_buff* sender_skb, struct genl_info* info)
 {
-    pr_info("%s() invoked\n", __func__);
-    return exec(sender_skb, info, COLLECTOR_COMMAND_UNHIDE);
+    return change_path_visibility(info, true /* hide */);;
 }
 
-int uninstall(struct sk_buff* sender_skb, struct genl_info* info)
+int unhide_cb(struct sk_buff* sender_skb, struct genl_info* info)
 {
-    pr_info("%s() invoked\n", __func__);
-    return exec(sender_skb, info, COLLECTOR_COMMAND_UNINSTALL);
+    return change_path_visibility(info, false /* hide */);;
+}
+
+int uninstall_cb(struct sk_buff* sender_skb, struct genl_info* info)
+{
+    int res;
+
+    res = mutex_lock_interruptible(&mtx);
+    if (res != 0)
+    {
+        pr_err("Failed to get lock!\n");
+        return res;
+    }
+
+    res = send_reply(info, COLLECTOR_COMMAND_UNINSTALL, uninstall());
+    mutex_unlock(&mtx);
+    return res;
 }
 
 static int __init collector_module_init(void)
@@ -235,26 +264,17 @@ static int __init collector_module_init(void)
     mutex_init(&mtx);
     pr_info("Module initialied");
     return 0;
-
-    /*ret = mutex_lock_interruptible(&dumpit_cb_progress_data.mtx);
-    if (ret != 0) {
-        pr_err("Failed to get lock!\n");
-        return ret;
-    }
-
-    mutex_unlock(&dumpit_cb_progress_data.mtx);
-
-    */
 }
 
 static void __exit collector_module_exit(void)
 {
+    int res;
     mutex_destroy(&mtx);
 
-    int ret = genl_unregister_family(&family_descr);
-    if (ret != 0)
+    res = genl_unregister_family(&family_descr);
+    if (res != 0)
     {
-        pr_err("Failed to unregister family: %i\n", ret);
+        pr_err("Failed to unregister family: %i\n", res);
     }
 
     pr_info("Module deinitialized");
